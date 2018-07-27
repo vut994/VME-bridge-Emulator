@@ -1,0 +1,162 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+
+entity IRQHandler is
+  Port (
+    ACLK             : in std_logic;
+    IRQ3             : in std_logic;                     --from PS ID #62 
+    BG3              : in std_logic; --from .do file
+    A1_To_A3         : out std_logic_vector(7 downto 0); --to copy the ID of the interrupt
+    IrqIACK             : out std_logic;                    --interrupt acknowlege
+    BR3              : out std_logic;
+    HNDLR_OVER       : out std_logic;
+    IrqDTACK            : in std_logic;                     --given from .do file in this case
+    IrqBBSY             : out std_logic;
+    IrqAS               : out std_logic;
+    d0tod7           : in std_logic_vector(3 downto 0);
+    Reserved_bits    : in std_logic_vector(31 downto 0);
+    IrqDS               : out std_logic
+--    DS1              : out std_logic
+   -- device_Grant_Bus: out std_logic;
+  --  Device_WantBus  : out std_logic      
+   );
+end IRQHandler;
+
+architecture Behavioral of IRQHandler is
+    type Intr_handler_states is (ST_Intr_1, ST_Intr_2, ST_Intr_3, ST_Intr_4,ST_Intr_5,ST_Intr_6);
+    
+    signal StatePrev, StateCurr  : Intr_handler_states := ST_Intr_1;  --start from idle state
+    signal A1_To_A3Prev, A1_To_A3Curr   : std_logic_vector(7 downto 0) := (others => '0');
+    signal IACKPrev, IACKCurr           : std_logic := '1';
+    signal BBsyPrev, BBsyCurr           : std_logic := '1';
+    signal BR3Prev, BR3Curr               : std_logic := '1';
+    signal Data_BusPrev, Data_BusCurr   : std_logic_vector(3 downto 0);
+    signal ASPrev, ASCurr               : std_logic := '1'; 
+    signal DSPrev, DSCurr               : std_logic := 'Z';
+    signal Reserved_bitsPrev,Reserved_bitsCur :  std_logic_vector(31 downto 0); 
+    signal HNDLR_OVERPrev,HNDLR_OVERCurr : std_logic;
+    --signal DS1Prev, DS1Curr               : std_logic := 'Z';
+    signal data_buffer                   : std_logic_vector(31 downto 0);     
+
+
+begin
+A1_To_A3  <= A1_To_A3Curr;
+IrqDS <= DSCurr;
+--DS1 <= DS1Curr;
+IrqIACK <= IACKCurr;
+BR3 <= BR3Curr;
+IrqBBSY <= BBsyCurr;
+IrqAS <= ASCurr;
+HNDLR_OVER <= HNDLR_OVERCurr;
+
+InterHandler_process: process(ACLK, IrqDTACK, BG3, StateCurr, d0tod7)
+begin
+
+    StatePrev <= StateCurr;
+    IACKPrev <= IACKCurr;
+    BBsyPrev <= BBsyCurr;
+    BR3Prev <=  BR3Curr;
+    ASPrev <= ASCurr;
+    DSPrev <= DSCurr;
+    Reserved_bitsPrev <= Reserved_bits;
+    HNDLR_OVERPrev <= HNDLR_OVERCurr;
+
+    --DS1Prev <= DS1Curr;
+    
+    
+    case StateCurr is
+    
+        when ST_Intr_1 =>
+             BR3Prev <= '1';
+             data_buffer <= "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+             BBsyPrev <= '1';
+             ASPrev <= '1';
+             DSPrev <= '1';
+    --             DS1 <= '1';
+          --   enable1 <= '1'; 
+             if(Reserved_bitsPrev(7) = '1') then  
+                HNDLR_OVERPrev <= '0';
+             end if;   
+             
+             IACKPrev <= '1';
+             A1_To_A3Prev(3 downto 0) <= "ZZZZZZZZ"; 
+        
+        
+            if(IRQ3 = '0') then --triggered IRQ from xx
+               --Device_WantBus <= '1';  --assert this signal to say the DTB bus has an error
+               StatePrev <= ST_Intr_2;
+            else
+                StatePrev <= ST_Intr_1;
+            end if;
+            
+        when ST_Intr_2 =>
+               --detect device want bus
+               BR3Prev <= '0';           --assert BR3;
+               StatePrev <= ST_Intr_3;
+               
+        when ST_Intr_3 =>
+            --arbitrer will assert BCLR and master will detect and assert master want bus
+            --master will negate BBSY and arbitrer will aseert BG3OUT for daisy chain and give out BG3In to handler
+            if(BG3 = '0') then         --detect asserted BG3 from .do file
+               HNDLR_OVERPrev <= '0';
+                BBsyPrev <= '0';            --asset bus busy
+               -- device_Grant_Bus <= '1';--assert (but got a doubt here)
+                StatePrev <= ST_Intr_4;
+            end if;
+            
+        when ST_Intr_4 =>
+                --detect device granted asseterted and copy 3-bit code
+                A1_To_A3Prev <= "0000"&"011"&'0';      --copy IRQ3 code 
+                IACKPrev <= '0';
+                ASPrev   <= '0';            --assert AS
+                DSPrev   <= '1';           --DS0 asserted for placing data
+                --DS1Prev   <= '0';           --DS1 asserted for placing data
+                StatePrev <= ST_Intr_5;
+                
+        when ST_Intr_5 =>
+            Data_BusPrev <= d0tod7;          --copy  the same to Data_Bus i.e last 3 bit IRQ ID(IRQ3);
+            --master will copy ID byte on D0-D7 and assert DTACK
+            if(IrqDTACK = '0') then        --detect DTACK low from the .do file
+               --master will copy the IRQ id to data_fromMAster 
+               
+               HNDLR_OVERPrev <= '1';
+               StatePrev <= ST_Intr_1; 
+           else
+                StatePrev <= ST_Intr_6;
+            end if;
+            
+        when ST_Intr_6 =>
+            --release bus and initiate interrupt handler routine
+            BR3Prev <= '1';
+            StatePrev <= ST_Intr_1;
+            IACKPrev <= '1';
+            ASPrev   <= '1';
+            BBsyPrev <= '1';
+            DSPrev   <= '0';           --DS0 asserted for placing data
+            HNDLR_OVERPrev <= '1';
+            A1_To_A3Prev <= "ZZZZZZZZ";
+            StatePrev <= ST_Intr_1;
+            data_buffer <= "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+             StatePrev <= ST_Intr_1;
+            --DS1Prev   <= '0';           --DS1 asserted for placing data
+    end case;
+    
+end process;
+
+process(ACLK)
+begin
+    if rising_edge(ACLK) then
+        StateCurr <= StatePrev;
+        IACKCurr <= IACKPrev;
+        BBsyCurr <= BBsyPrev;
+        BR3Curr <=  BR3Prev;
+        ASCurr <= ASPrev;
+        DSCurr <= DSPrev; 
+       -- DS1Curr <= DS1Prev;
+        Data_BusCurr <= Data_BusPrev;
+        A1_To_A3Curr <= A1_To_A3Prev;   
+    end if;
+end process;
+end Behavioral;

@@ -1,0 +1,80 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity IRQ_Req is
+  Port (
+   ACLK : in std_logic;
+   irq4 : out std_logic;
+   IRQ4src : in std_logic;
+   iackin : in std_logic;
+   iackout : out std_logic;
+   dtackirq :   in std_logic;
+   data : inout std_logic_vector(3 downto 0);
+   int_id : in std_logic_vector(7 downto 0);
+    enable : out std_logic;
+   irq_st : in std_logic_vector(7 downto 0);
+   address_bus : in std_logic_vector(7 downto 0)
+  );
+end IRQ_Req;
+
+architecture Behavioral of IRQ_Req is
+
+type States is (Idle, S0, S1, S2, S3);
+signal State : States := Idle;
+
+begin
+
+process(ACLK, IRQ4src)
+begin
+    if(ACLK'event and ACLK='1') then
+        case State is
+         when Idle =>
+           irq4 <= '1';
+           iackout <= iackin;
+           enable <= '0';
+           data <= "ZZZZ";
+           if(IRQ4src = '1') then
+               State <= S0;
+           else
+               State <= Idle;
+           end if;
+        when S0 =>
+           irq4 <= '0';
+           State <= S1;
+           
+        when S1 =>
+           if(iackin = '0') then
+               iackout <= '1';
+                State <= S2;     
+           else
+               State <= S1;
+               
+           end if;    
+                                 
+        when S2 =>
+            if(address_bus(3 downto 1) = "100") then  
+             enable <= '1';      
+                data <=  int_id(3 downto 0);
+               State <= S3;
+            else    
+                data <= "ZZZZ";
+                state <= Idle;             
+            end if;
+            when S3 =>
+             if(dtackirq = '0') then
+              
+                   data <= "ZZZZ";
+                State <= Idle;
+            else 
+                State <= S3;
+            end if;   
+        when others=>
+           enable <= '0';
+            irq4 <= '1';
+        iackout <= iackin;
+        data <= "ZZZZ";                   
+        end case;
+    end if;        
+end process;
+end Behavioral;

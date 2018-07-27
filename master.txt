@@ -1,0 +1,362 @@
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity VMEMaster is
+  Port ( 
+        ACLK                :   in  std_logic;
+        ARESETN             :   in  std_logic;
+        
+        --MODE                :   in std_logic_vector(1 downto 0);
+        ADDRESS_OUT         :   in std_logic_vector(31 downto 0); 
+        ADDRESSbus          :   inout std_logic_vector(7 downto 0);
+        AM                  :   in  std_logic_vector(7 downto 0);
+        IACK                :   out  std_logic;
+        AS                  :   out std_logic;
+        DS0                 :   out std_logic;
+        DS1                 :   out std_logic;
+        DTACK               :   in  std_logic;
+        --DATA_In             :   in std_logic_vector(31 downto 0);
+        DATABUS_IN          :   inout std_logic_vector(31 downto 0);
+        DATAbus             :   inout std_logic_vector(3 downto 0);
+        WRITE               :   out std_logic;
+        BERR                :   in  std_logic;
+        BBSY                :   out std_logic;
+        LWORD               :   out std_logic;
+        BCLR                :   in  std_logic;
+        EN                  :   out std_logic;
+        EN_DATA             :   out std_logic;
+        DIR                 :   out std_logic;
+        
+        IRQOUT              :   out std_logic;
+--        IRQvector           :   in std_logic_vector(7 downto 0); 
+--        IRQnum              :   in std_logic_vector(7 downto 0);
+        RESERVEDIN          :   in  std_logic_vector(31 downto 0);
+        BG2in               :   in  std_logic;
+        BG2out              :   out std_logic;
+        BR2                 :   out std_logic
+  );
+end VMEMaster;
+
+architecture Behavioral of VMEMaster is
+
+function validateParam (ADDRESS : std_logic_vector(1 downto 0);data_bus : std_logic_vector(31 downto 0);am : std_logic_vector(7 downto 0);RESERVEDIN : std_logic_vector(31 downto 0)) return std_logic_vector is
+    variable ReturnBool : std_logic_vector(1 downto 0);
+    begin
+    
+    
+        if(am = x"3a" or am = x"39") then
+            if(ADDRESS = "00"  and data_bus /= x"00000000"  ) then
+                
+                if(RESERVEDIN(31 downto 28) = x"B") then 
+                      ReturnBool := "10"; -- start
+                else
+                      ReturnBool := "01"; --do not start
+                end if;           
+            else
+                ReturnBool := "01"; -- incomplete data do not start             
+            end if;        
+        else        
+            ReturnBool := "11"; -- incomplete address do not start         
+        end if;
+        return ReturnBool;
+end validateParam;
+
+signal AddressBuffer                    : std_logic_vector(31 downto 0);
+signal dataBufferPrev                   : std_logic_vector(31 downto 0);
+signal dataBufferCurr                   : std_logic_vector(31 downto 0);
+signal ASBufferPrev                     : std_logic;
+signal ASBufferCurr                     : std_logic;
+signal DS0BufferPrev                    : std_logic;
+signal DS0BufferCurr                    : std_logic;
+signal DS1BufferPrev                    : std_logic;
+signal DS1BufferCurr                    : std_logic;
+signal writeBufferPrev                  : std_logic;
+signal writeBufferCurr                  : std_logic;
+signal BbsyBufferPrev                   : std_logic;
+signal BbsyBufferCurr                   : std_logic;
+signal AMBufferCurr                     : std_logic_vector(7 downto 0);
+signal BG2inBuffer                      : std_logic;
+signal BG2outBufferPrev                 : std_logic;
+signal BG2outBufferCurr                 : std_logic;
+signal BR2BufferPrev                    : std_logic;
+signal BR2BufferCurr                    : std_logic;
+signal EnBufferPrev                     : std_logic;
+signal EnBufferCurr                     : std_logic;
+signal EnDBufferPrev                    : std_logic;
+signal EnDBufferCurr                    : std_logic;
+signal DIRBufferPrev                    : std_logic;
+signal DIRBufferCurr                    : std_logic;
+signal IACKBufferPrev                   : std_logic;
+signal IACKBufferCurr                   : std_logic;
+signal LWORDBufferPrev                  : std_logic;
+signal LWORDBufferCurr                  : std_logic;
+signal IRQOUTBufferPrev                 : std_logic;
+signal IRQOUTBufferCurr                 : std_logic;
+signal BERRBufferCurr                   : std_logic;
+signal DTACKBufferCurr                  : std_logic;
+signal MODEBufferCurr                   : std_logic_vector(1 downto 0);
+signal incr_countx: integer := 0;
+signal incr_countC: integer := 0;
+signal VariablesInRange : std_logic_vector(1 downto 0);
+--signal read_done_buffer             : std_logic;
+--signal write_done_buffer            : std_logic;
+--signal DEVICE_WANTS_BUSBuffer       : std_logic_vector(3 downto 0);
+--signal DEVICE_GRANTED_BUSBuffer     : std_logic_vector(3 downto 0);
+
+type States is (Idle, S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12);
+signal StatePrev, StateCurr : States :=Idle;
+
+begin
+
+MODEBufferCurr <= RESERVEDIN(17 downto 16);
+BERRBufferCurr <= BERR;
+DTACKBufferCurr <= DTACK;
+BG2inBuffer <=  BG2in;
+
+DS0 <= DS0BufferCurr;
+DS1 <= DS1BufferCurr;
+AS  <= ASBufferCurr;
+IACK <= IACKBufferCurr;
+WRITE <= writeBufferCurr;
+BBSY <= BbsyBufferCurr;
+LWORD <= LWORDBufferCurr;
+EN <= EnBufferCurr;
+IRQOUT <= IRQOUTBufferCurr;
+BG2out <= BG2outBufferCurr;
+BR2 <= BR2BufferCurr;
+EN_DATA <= EnDBufferCurr;
+DIR <= DIRBufferCurr;
+
+
+Master_RW:process(ADDRESS_OUT, DATABUS_IN, RESERVEDIN, AM, StateCurr, incr_countC, VariablesInRange)
+
+begin
+if MODEBufferCurr = "10" or MODEBufferCurr = "01" then
+VariablesInRange <=  validateParam(ADDRESS_OUT(1 downto 0), DATABUS_IN, AM, RESERVEDIN);
+end if;
+
+    StatePrev  <= StateCurr;
+    EnBufferPrev  <= EnBufferCurr; --active high input which turn off all the TS buffers
+    BR2BufferPrev <=  BR2BufferCurr;
+    BbsyBufferPrev <= BbsyBufferCurr;
+    ASBufferPrev <= ASBufferCurr;
+    DS0BufferPrev <= DS0BufferCurr;
+    DS1BufferPrev <= DS1BufferCurr;
+    writeBufferPrev <= writeBufferCurr;
+    LWORDBufferPrev <= LWORDBufferCurr;
+    IACKBufferPrev <= IACKBufferCurr;
+    BG2outBufferPrev <= BG2outBufferCurr;
+    dataBufferPrev <= dataBufferCurr;
+    IRQOUTBufferPrev <= IRQOUTBufferCurr;
+    DIRBufferPrev <= DIRBufferCurr;
+    EnDBufferPrev <= EnDBufferCurr;
+    incr_countx <= incr_countC;
+    
+    if(incr_countC /= 0) then
+    incr_countx <= incr_countC - 1;
+    
+    else
+    
+        if(VariablesInRange = "01" or VariablesInRange = "11") then
+            EnBufferPrev <= '0'; --active high input which turn off all the TS buffers
+            BR2BufferPrev <= '1'; 
+            IRQOUTBufferPrev <= '1';        
+        elsif RESERVEDIN(0) = '1' then 
+            IRQOUTBufferPrev <= '0'; 
+        end if;                                  
+       
+           case StateCurr is 
+            when Idle =>
+                EnBufferPrev <= '0'; --active high input which turn off all the TS buffers
+                BR2BufferPrev <= '1';
+                BbsyBufferPrev <= '1';
+                ASBufferPrev <= '1';
+                DS0BufferPrev <= '1';
+                DS1BufferPrev <= '1';
+                writeBufferPrev <= '1';
+                LWORDBufferPrev <= '1';
+                IACKBufferPrev <= '1';
+                BG2outBufferPrev <= '1';
+                BG2outBufferPrev <= BG2IN;
+                StatePrev <= S1;
+                ADDRESSbus <= "ZZZZZZZZ";
+                DATAbus <= "ZZZZ";
+            when S1 =>
+             if VariablesInRange = "10" then
+                ADDRESSbus <= ADDRESS_OUT(7 downto 0);
+                BR2BufferPrev <= '0'; --make bus request low
+                StatePrev <= S2;
+                end if;
+                BbsyBufferPrev <= '1';
+                ASBufferPrev <= '1';
+                DS0BufferPrev <= '1';
+                DS1BufferPrev <= '1';
+                writeBufferPrev <= '1';
+                LWORDBufferPrev <= '1';
+                IACKBufferPrev <= '1';
+                BG2outBufferPrev <= '1';
+                
+
+            
+            when S2 =>
+                if(BG2in = '0') then  --check if the bus grant is low and make bus busy high
+                   BG2outBufferPrev <= '1';  -- keep the DTB bus,wait for 1 cycle to assert bus busy 
+                   StatePrev <= S3;
+                else
+                   BbsyBufferPrev <= '1';
+                   BG2outBufferPrev <= BG2inBuffer;
+                   StatePrev <= S2; 
+                end if;
+                
+            when S3 => --wait for 24ns untill BBSY is asserted
+                    incr_countx <= 3;   
+                    StatePrev <= S4; 
+                
+           --DTB involves in data transfer for 90ns    
+            when S4 =>  --assert BBSY low in this state
+                BbsyBufferPrev <= '0';
+                EnBufferPrev <= '1';  --enabling the tri-state buffer
+                StatePrev <= S5;
+                
+            when S5 => 
+                LWORDBufferPrev <= '0';  --data width D32
+                IACKBufferPrev <= '1';
+                incr_countx <= 3;
+                StatePrev <= S6;              
+                
+               
+            when S6 =>
+                ASBufferPrev <= '0';  --assert AS and specify data direction read/write
+                EnDBufferPrev <= '1';
+                if(MODEBufferCurr = "10" ) then --write cycle
+                    DIRBufferPrev <= '1';    --assert direction for read/write
+                    dataBufferPrev <= DATABUS_IN; --place data on bus write operation
+                    DATAbus <= DATABUS_IN(3 downto 0);
+                    StatePrev <= S7;
+                elsif(MODEBufferCurr = "01") then --read cycle
+              --      writeBufferPrev <= '1';
+                    DIRBufferPrev <= '0';
+                    DATABUS_IN <= dataBufferPrev;
+                    StatePrev <= S7;
+                else
+                    StatePrev <= S6;
+                end if;
+                            
+                
+            when S7 =>   --wait for 30ns
+                if(MODEBufferCurr = "10") then
+                    writeBufferPrev <= '0';  --write
+                else
+                    writeBufferPrev <= '1';  --read
+                end if;
+                DS0BufferPrev <= '0';
+                DS1BufferPrev <= '0';
+                LWORDBufferPrev <= '0';
+                incr_countx <= 3;
+                StatePrev <= S8;
+            
+            
+            when S8 =>
+                BR2BufferPrev <= '1'; --make BR2 high
+                StatePrev <= S9;
+                    
+            when S9 =>
+                incr_countx <= 2;
+                    if DTACKBufferCurr = '0' then
+                        StatePrev <= S10;
+                        EnDBufferPrev <= '0';
+                        EnBufferPrev <= '0';
+                        LWORDBufferPrev <= '1';
+                        IACKBufferPrev <= '1';
+                        DS0BufferPrev <= '1';
+                        DS1BufferPrev <= '1';
+                    elsif  BERRBufferCurr = '0' then
+                        StatePrev <= S10;
+                        EnDBufferPrev <= '0';
+                        EnBufferPrev <= '0';
+                        LWORDBufferPrev <= '1';
+                        IACKBufferPrev <= '1';
+                        DS0BufferPrev <= '1';
+                        DS1BufferPrev <= '1'; 
+                        IRQOUTBufferPrev <= '1';
+                    else
+                        StatePrev <= S9;  
+                    end if;
+
+            
+            when S10 =>
+                ASBufferPrev <= '1'; 
+                incr_countx <= 1;
+                    StatePrev <= S11;
+                    
+            when S11 =>
+                if(BG2inBuffer = '1') then
+                    BbsyBufferPrev <= '1';
+                    StatePrev <= S12;
+                else
+                    StatePrev <= S11;
+                end if;
+            when S12 =>
+                EnBufferPrev <= '0'; --active high input which turn off all the TS buffers
+                BR2BufferPrev <= '1';
+                BbsyBufferPrev <= '1';
+                ASBufferPrev <= 'Z';
+                DS0BufferPrev <= 'Z';
+                DS1BufferPrev <= 'Z';
+                writeBufferPrev <= 'Z';
+                LWORDBufferPrev <= 'Z';
+                IACKBufferPrev <= 'Z';                    
+                BG2outBufferPrev <= BG2inBuffer;
+                EnDBufferPrev <= '0';
+                StatePrev <= Idle;           
+                ADDRESSbus <= "ZZZZZZZZ";
+                DATAbus <= "ZZZZ";
+            when others =>  
+                  StatePrev <= Idle;
+            end case;
+--            else
+--            VariablesInRange <=  validateParam(ADDRESS_OUT(1 downto 0), DATABUS_IN, AM, RESERVEDIN);
+        end if;
+
+
+end process;
+
+ process(ACLK)
+  begin
+     if (ACLK'event and ACLK='1') then
+      if ARESETN = '0' then
+      StateCurr <= Idle;
+      EnBufferCurr <= '0'; --active high input which turn off all the TS buffers
+      BR2BufferCurr <= '1';
+      BbsyBufferCurr <= '1';
+      ASBufferCurr <= '1';
+      DS0BufferCurr <= '1';
+      DS1BufferCurr <= '1';
+      writeBufferCurr <= '1';
+      LWORDBufferCurr <= '1';
+      IACKBufferCurr <= '1';
+      BG2outBufferCurr <= '1';
+            
+      else
+            StateCurr <= StatePrev;
+            EnBufferCurr <= EnBufferPrev; --active high input which turn off all the TS buffers
+            BR2BufferCurr <= BR2BufferPrev;
+            BbsyBufferCurr <= BbsyBufferPrev;
+            ASBufferCurr <= ASBufferPrev;
+            DS0BufferCurr <= DS0BufferPrev;
+            DS1BufferCurr <= DS1BufferPrev;
+            writeBufferCurr <= writeBufferPrev;
+            LWORDBufferCurr <= LWORDBufferPrev;
+            IACKBufferCurr <= IACKBufferPrev;
+            BG2outBufferCurr <= BG2outBufferPrev;
+            dataBufferCurr <= dataBufferPrev;     
+            IRQOUTBufferCurr <= IRQOUTBufferPrev;
+            DIRBufferCurr <= DIRBufferPrev;
+            EnDBufferCurr <= EnDBufferPrev;
+            incr_countC <= incr_countx;
+      end if;
+     end if;
+  end process;
+end Behavioral;
